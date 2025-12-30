@@ -1,24 +1,33 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 app = FastAPI()
 
-# Load basic T5-small model
-model_name = "google-t5/t5-small"
-tokenizer = T5Tokenizer.from_pretrained(model_name)
-model = T5ForConditionalGeneration.from_pretrained(model_name)
 
-class InputText(BaseModel):
+MODEL_NAME = "google/bigbird-pegasus-large-pubmed"
+
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    MODEL_NAME,
+    cache_dir="./models/bigbird_pubmed"
+)
+
+tokenizer = AutoTokenizer.from_pretrained(
+    MODEL_NAME,
+    cache_dir="./models/bigbird_pubmed"
+)
+
+class SummarizeRequest(BaseModel):
     text: str
 
-@app.get("/")
-def home():
-    return {"message": "Local T5 summarization server is running!"}
-
 @app.post("/summarize")
-def summarize(input: InputText):
-    content = "summarize: " + input.text
+def summarize(req: SummarizeRequest):
+    text = req.text
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Text is empty")
+
+    content = "summarize: " + text
 
     inputs = tokenizer.encode(
         content,
@@ -27,13 +36,16 @@ def summarize(input: InputText):
         max_length=512
     )
 
-    outputs = model.generate(
+    output = model.generate(
         inputs,
-        max_length=150,
-        min_length=20,
-        num_beams=4,
-        length_penalty=2.0
+        max_new_tokens=120,
+        num_beams=2
     )
 
-    summary = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return {"summary": summary}
+    return {
+        "summary": tokenizer.decode(output[0], skip_special_tokens=True)
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
