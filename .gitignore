@@ -1,0 +1,24 @@
+# ===== LLaMA base model (DO NOT COMMIT) =====
+llama2-7b/
+models/llama2-7b/
+models/**/llama2*
+
+# ===== HuggingFace cache =====
+.cache/
+.huggingface/
+**/.cache/huggingface/
+
+# ===== Large model weights =====
+*.bin
+*.safetensors
+*.pt
+
+# ===== Python =====
+.venv/
+__pycache__/
+*.pyc
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+.DS_Store

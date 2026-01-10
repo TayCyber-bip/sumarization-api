@@ -1,60 +1,79 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
 import torch
 
 app = FastAPI()
 
-MODEL_NAME = "google/bigbird-pegasus-large-pubmed"
+BASE_MODEL_PATH = "./models/llama2-7b"
+PEFT_MODEL_PATH = "./models/peft/peft-dialogue-summary"
 
-model = AutoModelForSeq2SeqLM.from_pretrained(
-    MODEL_NAME,
-    cache_dir="./models/bigbird_pubmed"
+# Load tokenizer (BASE MODEL, không phải PEFT)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
+tokenizer.pad_token = tokenizer.eos_token
+
+# Load base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    BASE_MODEL_PATH,
+    torch_dtype=torch.float16,
+    device_map="auto"
 )
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_NAME,
-    cache_dir="./models/bigbird_pubmed"
+# Attach PEFT
+model = PeftModel.from_pretrained(
+    base_model,
+    PEFT_MODEL_PATH
 )
 
+model.eval()
+
+def build_prompt(text: str) -> str:
+    return f"""Summarize the following conversation.
+
+### Input:
+{text}
+
+### Summary:
+"""
 
 class SummarizeRequest(BaseModel):
     text: str
 
-
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
-    text = req.text
-
-    if not text.strip():
+    if not req.text.strip():
         raise HTTPException(status_code=400, detail="Text is empty")
 
+    prompt = build_prompt(req.text)
+
     inputs = tokenizer(
-        text,
+        prompt,
         return_tensors="pt",
         truncation=True,
-        max_length=4096
-    )
+        max_length=1024
+    ).to(model.device)
 
     with torch.no_grad():
-        output = model.generate(
+        outputs = model.generate(
             **inputs,
-            max_new_tokens=180,
-            num_beams=4,
-            early_stopping=True
+            max_new_tokens=200,
+            temperature=0.6,
+            top_p=0.9,
+            repetition_penalty=1.15,
+            do_sample=False,
         )
-    summary = tokenizer.decode(
-            output[0],
-            skip_special_tokens=True
+
+    decoded = tokenizer.decode(
+        outputs[0],
+        skip_special_tokens=True
     )
-    summary = summary.replace("<n>", " ").strip()
 
-    return {
-        "summary": summary
-    }
+    # Cắt bỏ prompt
+    summary = decoded[len(prompt):].strip()
 
+    return {"summary": summary}
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
