@@ -10,3 +10,5 @@ peft
 datasets
 google-generativeai
 python-dotenv
+sqlalchemy
+aiosqlite
