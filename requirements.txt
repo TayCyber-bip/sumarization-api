@@ -3,4 +3,10 @@ gunicorn
 uvicorn
 transformers
 torch
-nltk
+sentence-transformers
+accelerate
+bitsandbytes
+peft
+datasets
+google-generativeai
+python-dotenv
