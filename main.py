@@ -226,7 +226,7 @@ def chat(req: ChatRequest):
                 temperature=0.7,  # Balanced temperature for medical responses
                 top_p=0.9,
                 top_k=40,
-                max_output_tokens=300,  # Short responses - 2-4 sentences max (enough for complete answer)
+                max_output_tokens=800,  # Increased to allow complete responses without truncation
             )
         )
         
