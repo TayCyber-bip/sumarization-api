@@ -1,69 +1,27 @@
-from fastapi import FastAPI, HTTPException, Request, Query
-from peft import PeftModel
+"""Chatbot API routes with chat history management"""
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
-import torch
-import os
 from typing import Optional, List, Dict
+import os
+import uuid
 import google.generativeai as genai
 from dotenv import load_dotenv
-from datetime import datetime
-import uuid
-import sqlite3
-from contextlib import contextmanager
-import re
 
-from app.routes import summarization, chatbot
+from app.database import (
+    init_database,
+    get_chat_history,
+    save_chat_message,
+    get_db_connection
+)
 
-
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-app = FastAPI()
-
-# Database setup for chat history
-DB_PATH = "chat_history.db"
-
-
-@contextmanager
-def get_db_connection():
-    """Context manager for database connections"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def init_database():
-    """Initialize the database with chat history table"""
-    with get_db_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                user_message TEXT NOT NULL,
-                assistant_message TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Create indexes for better performance
-        try:
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_id ON chat_history(session_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON chat_history(created_at)")
-        except:
-            pass  # Indexes might already exist
-
+router = APIRouter(prefix="/chat", tags=["chatbot"])
 
 # Google Gemini Configuration for Medical Chatbot
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL",
-                         "models/gemini-2.5-flash")  # Options: models/gemini-2.5-flash, models/gemini-2.5-pro, models/gemini-flash-latest
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")  # Options: models/gemini-2.5-flash, models/gemini-2.5-pro, models/gemini-flash-latest
 
 # Initialize Gemini client
 gemini_model = None
@@ -94,13 +52,10 @@ Important: Always end with a brief disclaimer: "This is informational only, not 
 If asked about non-medical topics, politely redirect to health/medical questions only."""
 
 
-
-
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None  # Session ID for chat history, auto-generated if not provided
-    conversation_history: Optional[
-        List[Dict[str, str]]] = []  # Optional: for maintaining context (deprecated, use session_id instead)
+    conversation_history: Optional[List[Dict[str, str]]] = []  # Optional: for maintaining context (deprecated, use session_id instead)
 
 
 class ChatHistoryResponse(BaseModel):
@@ -109,42 +64,15 @@ class ChatHistoryResponse(BaseModel):
     created_at: str
 
 
-# Initialize database on startup
+# Initialize database on module import
 init_database()
 
 
-def get_chat_history(session_id: str, limit: int = 10) -> List[Dict[str, str]]:
-    """Get chat history from database for a session"""
-    with get_db_connection() as conn:
-        cursor = conn.execute(
-            "SELECT user_message, assistant_message FROM chat_history WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
-            (session_id, limit)
-        )
-        rows = cursor.fetchall()
-        # Reverse to get chronological order
-        history = []
-        for row in reversed(rows):
-            history.append({
-                "user": row["user_message"],
-                "assistant": row["assistant_message"]
-            })
-        return history
-
-
-def save_chat_message(session_id: str, user_message: str, assistant_message: str):
-    """Save chat message to database"""
-    with get_db_connection() as conn:
-        conn.execute(
-            "INSERT INTO chat_history (session_id, user_message, assistant_message) VALUES (?, ?, ?)",
-            (session_id, user_message, assistant_message)
-        )
-
-
-@app.post("/chat")
+@router.post("")
 def chat(req: ChatRequest):
     """
     Medical chatbot endpoint using Google Gemini with chat history management.
-
+    
     This endpoint:
     - Automatically creates/generates session_id if not provided
     - Retrieves conversation history from database if session_id is provided
@@ -152,34 +80,34 @@ def chat(req: ChatRequest):
     - Provides clear, contextual responses based on conversation history
     """
     message = req.message
-
+    
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
-
+    
     # Check if Gemini API key is configured
     if not GEMINI_API_KEY or not gemini_model:
         raise HTTPException(
             status_code=503,
             detail="Gemini API key not configured. Please set GEMINI_API_KEY environment variable."
         )
-
+    
     try:
         # Generate or use provided session_id
         session_id = req.session_id or str(uuid.uuid4())
-
+        
         # Get chat history from database (prioritize database over manual history)
         chat_history = []
         if session_id:
             chat_history = get_chat_history(session_id, limit=10)
-
+        
         # Fallback to manual conversation_history if no database history
         if not chat_history and req.conversation_history:
             chat_history = req.conversation_history
-
+        
         # Build prompt with system instructions and conversation history
         # Format optimized for Gemini to ensure complete, contextual responses
         prompt_parts = [MEDICAL_SYSTEM_PROMPT]
-
+        
         # Add conversation history for better context (last 10 messages)
         if chat_history:
             prompt_parts.append("\n\nConversation history:")
@@ -189,15 +117,14 @@ def chat(req: ChatRequest):
                 if user_msg and assistant_msg:
                     prompt_parts.append(f"User: {user_msg}")
                     prompt_parts.append(f"Assistant: {assistant_msg}")
-
+        
         # Add current user message with clear instruction
         prompt_parts.append(f"\n\nCurrent user question: {message}")
-        prompt_parts.append(
-            "\nProvide a brief, concise medical answer (2-4 sentences) based on the conversation context:")
-
+        prompt_parts.append("\nProvide a brief, concise medical answer (2-4 sentences) based on the conversation context:")
+        
         # Combine all parts into full prompt
         full_prompt = "\n".join(prompt_parts)
-
+        
         # Call Gemini API with short response configuration
         response = gemini_model.generate_content(
             full_prompt,
@@ -208,10 +135,10 @@ def chat(req: ChatRequest):
                 max_output_tokens=800,  # Increased to allow complete responses without truncation
             )
         )
-
+        
         # Extract the assistant's response
         assistant_response = response.text.strip()
-
+        
         # Check if response was cut off (finish_reason == 'MAX_TOKENS')
         if hasattr(response, 'candidates') and len(response.candidates) > 0:
             finish_reason = response.candidates[0].finish_reason
@@ -219,21 +146,21 @@ def chat(req: ChatRequest):
             if finish_reason == 'MAX_TOKENS' and not assistant_response.endswith('.'):
                 # Response was truncated, but we'll use what we have
                 pass
-
+        
         # Ensure response is not empty
         if not assistant_response:
             assistant_response = "I apologize, but I couldn't generate a response. Please try again or consult a healthcare provider."
-
+        
         # Save to database
         save_chat_message(session_id, message, assistant_response)
-
+        
         return {
             "response": assistant_response,
             "message": message,
             "session_id": session_id,
             "model": GEMINI_MODEL
         }
-
+        
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -241,11 +168,11 @@ def chat(req: ChatRequest):
         )
 
 
-@app.get("/chat/history/{session_id}")
+@router.get("/history/{session_id}")
 def get_chat_history_endpoint(session_id: str, limit: Optional[int] = 50):
     """
     Get chat history for a specific session.
-
+    
     Useful for mobile apps to retrieve and display chat history.
     """
     try:
@@ -262,11 +189,11 @@ def get_chat_history_endpoint(session_id: str, limit: Optional[int] = 50):
         )
 
 
-@app.delete("/chat/history/{session_id}")
+@router.delete("/history/{session_id}")
 def delete_chat_history(session_id: str):
     """
     Delete all chat history for a specific session.
-
+    
     Useful for mobile apps to clear chat history.
     """
     try:
@@ -276,7 +203,7 @@ def delete_chat_history(session_id: str):
                 (session_id,)
             )
             deleted_count = cursor.rowcount
-
+        
         return {
             "session_id": session_id,
             "deleted_count": deleted_count,
@@ -289,11 +216,11 @@ def delete_chat_history(session_id: str):
         )
 
 
-@app.get("/chat/sessions")
+@router.get("/sessions")
 def list_sessions(limit: Optional[int] = 20):
     """
     List recent chat sessions.
-
+    
     Returns session IDs with their latest message timestamps.
     """
     try:
@@ -316,7 +243,7 @@ def list_sessions(limit: Optional[int] = 20):
                 }
                 for row in cursor.fetchall()
             ]
-
+        
         return {
             "sessions": sessions,
             "count": len(sessions)
@@ -326,113 +253,4 @@ def list_sessions(limit: Optional[int] = 20):
             status_code=500,
             detail=f"Error listing sessions: {str(e)}"
         )
-# Include routers
-app.include_router(summarization.router)
-app.include_router(chatbot.router)
 
-
-
-@app.get("/health")
-def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "services": ["summarization", "chatbot", "chat_history"]}
-
-
-BASE_MODEL_PATH = "./models/long-t5-tglobal-base-16384-book-summary"
-PEFT_MODEL_PATH = "./models/peft/peft-pubmed-summary"
-
-device = "cpu"  # bạn chỉ có CPU → set cứng
-
-# Load tokenizer
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
-
-# Load base model
-base_model = AutoModelForSeq2SeqLM.from_pretrained(
-    BASE_MODEL_PATH,
-    torch_dtype=torch.float32,
-)
-
-# Attach PEFT model
-model = PeftModel.from_pretrained(base_model, PEFT_MODEL_PATH)
-model.eval()
-model.config.use_cache = True   # RẤT QUAN TRỌNG cho speed
-
-
-MODE_CONFIG = {
-    "tldr": {
-        "max_new_tokens": 80,
-        "min_new_tokens": 30,
-        "num_beams": 1,
-        "length_penalty": 2.0,
-        "no_repeat_ngram_size": 3,
-        "early_stopping": True,
-    },
-
-    "short": {
-        "max_new_tokens": 160,
-        "min_new_tokens": 80,
-        "num_beams": 2,
-        "length_penalty": 1.2,
-        "no_repeat_ngram_size": 3,
-        "early_stopping": True,
-    },
-
-    "extract": {
-        "max_new_tokens": 300,
-        "min_new_tokens": 180,
-        "num_beams": 3,
-        "length_penalty": 0.6,
-        "no_repeat_ngram_size": 4,
-        "early_stopping": True,
-    },
-}
-
-
-def normalize_text(text: str) -> str:
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    return text.strip()
-
-@app.post("/summarize")
-async def summarize(
-    request: Request,
-    mode: str = Query("short", enum=["tldr", "short", "extract"])
-):
-    raw = await request.body()
-    text = normalize_text(raw.decode("utf-8"))
-
-    if not text:
-        raise HTTPException(400, "Empty text")
-
-    config = MODE_CONFIG[mode]
-
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=4096,
-    )
-
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=config["max_new_tokens"],
-            num_beams=config["num_beams"],
-            early_stopping=True,
-        )
-
-    summary = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    )
-
-    return {
-        "mode": mode,
-        "summary": summary
-    }
-
-# ===== RUN =====
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
