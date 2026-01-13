@@ -7,13 +7,11 @@ import os
 from typing import Optional, List, Dict
 import google.generativeai as genai
 from dotenv import load_dotenv
-from datetime import datetime
 import uuid
 import sqlite3
 from contextlib import contextmanager
 import re
 
-from app.routes import summarization, chatbot
 
 
 # Load environment variables from .env file
@@ -326,9 +324,6 @@ def list_sessions(limit: Optional[int] = 20):
             status_code=500,
             detail=f"Error listing sessions: {str(e)}"
         )
-# Include routers
-app.include_router(summarization.router)
-app.include_router(chatbot.router)
 
 
 
@@ -411,10 +406,10 @@ async def summarize(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=4096,
+        max_length=4096,   # nên chunk nếu văn bản dài hơn
     )
 
-    with torch.inference_mode():
+    with torch.inference_mode():   # nhanh hơn no_grad
         outputs = model.generate(
             **inputs,
             max_new_tokens=config["max_new_tokens"],
@@ -431,7 +426,6 @@ async def summarize(
         "mode": mode,
         "summary": summary
     }
-
 # ===== RUN =====
 if __name__ == "__main__":
     import uvicorn
