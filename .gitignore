@@ -24,10 +24,10 @@ server.log
 *.db
 chat_history.db
 
-# Test scripts (optional - uncomment if you don't want to commit)
-# test_api.ps1
-# test_api.js
-# test_api.bat
+# Test scripts
+test_api.ps1
+test_api.js
+test_api.bat
 
 # IDE
 .vscode/

@@ -68,13 +68,5 @@ max_output_tokens=300 # Short responses (2-4 sentences)
 3. **Disclaimer**: Luôn có disclaimer về không phải chẩn đoán y tế
 4. **Non-medical questions**: Sẽ redirect về health topics
 
-## Cấu hình hiện tại
 
-- ✅ Trả lời ngắn gọn (2-4 câu)
-- ✅ Focus vào y tế và sức khỏe
-- ✅ System prompt chuyên biệt
-- ✅ Generation config tối ưu
-- ✅ Model: gemini-2.5-flash
-
-Server đang chạy và sẵn sàng test! 🚀
 
